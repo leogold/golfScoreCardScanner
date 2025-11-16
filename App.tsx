@@ -1,7 +1,8 @@
-
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { extractScorecardData } from './services/geminiService';
-import { UploadIcon, GolfBallIcon, Spinner, CopyIcon, DownloadIcon } from './components/Icons';
+import { initClient, handleAuthClick, handleSignoutClick, appendToSheet } from './services/googleApiService';
+import { UploadIcon, GolfBallIcon, Spinner, GoogleIcon, SheetIcon, CheckIcon } from './components/Icons';
+import ScorecardTable from './components/ScorecardTable';
 import type { ScorecardData } from './types';
 
 const App: React.FC = () => {
@@ -10,7 +11,22 @@ const App: React.FC = () => {
   const [scorecardData, setScorecardData] = useState<ScorecardData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [copySuccess, setCopySuccess] = useState<string>('');
+  
+  const [isSignedIn, setIsSignedIn] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.onload = () => {
+        initClient(setIsSignedIn);
+    };
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+  }, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -42,6 +58,21 @@ const App: React.FC = () => {
     }
   }, [imageFile]);
 
+  const handleSaveToSheet = async () => {
+    if (!scorecardData) return;
+    setIsSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+    try {
+        await appendToSheet(scorecardData);
+        setSaveSuccess(true);
+    } catch (err) {
+        setSaveError(err instanceof Error ? err.message : "An unknown error occurred.");
+    } finally {
+        setIsSaving(false);
+    }
+  };
+
   const resetState = () => {
     setImageFile(null);
     if (previewUrl) {
@@ -51,45 +82,35 @@ const App: React.FC = () => {
     setScorecardData(null);
     setError(null);
     setIsLoading(false);
-    setCopySuccess('');
-  };
-
-  const handleCopyJson = () => {
-    if (!scorecardData) return;
-    navigator.clipboard.writeText(JSON.stringify(scorecardData, null, 2))
-      .then(() => {
-        setCopySuccess('Copied!');
-        setTimeout(() => setCopySuccess(''), 2000);
-      })
-      .catch(err => console.error('Failed to copy text: ', err));
-  };
-
-  const handleDownloadJson = () => {
-    if (!scorecardData) return;
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(scorecardData, null, 2));
-    const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", "scorecard.json");
-    document.body.appendChild(downloadAnchorNode);
-    downloadAnchorNode.click();
-    downloadAnchorNode.remove();
+    setSaveError(null);
+    setSaveSuccess(false);
   };
 
   return (
     <div className="min-h-screen bg-gray-100 text-gray-800 font-sans flex flex-col items-center p-4 sm:p-6 lg:p-8">
-      <header className="w-full max-w-5xl mx-auto text-center mb-8">
+      <header className="w-full max-w-7xl mx-auto flex justify-between items-center mb-8">
         <div className="flex items-center justify-center gap-4">
           <GolfBallIcon className="w-12 h-12 text-green-600" />
-          <h1 className="text-4xl sm:text-5xl font-bold text-gray-800 tracking-tight">
-            Golf Scorecard to JSON
+          <h1 className="text-3xl sm:text-4xl font-bold text-gray-800 tracking-tight">
+            Golf Scorecard Scanner
           </h1>
         </div>
-        <p className="mt-4 text-lg text-gray-600">
-          Upload a photo of your scorecard to extract the data into JSON format.
-        </p>
+        {isSignedIn ? (
+             <button onClick={() => { handleSignoutClick(); setIsSignedIn(false);}} className="flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                Sign Out
+             </button>
+        ) : (
+            <button onClick={handleAuthClick} className="flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                <GoogleIcon className="w-5 h-5 mr-2" />
+                Sign in with Google
+            </button>
+        )}
       </header>
+      <p className="mt-[-2rem] mb-8 text-lg text-gray-600 max-w-7xl w-full">
+          Upload a photo of your scorecard to extract the data and save it to Google Sheets.
+      </p>
 
-      <main className="w-full max-w-5xl mx-auto flex-grow flex flex-col items-center justify-center">
+      <main className="w-full max-w-7xl mx-auto flex-grow flex flex-col items-center">
         {!previewUrl ? (
           <div className="w-full max-w-lg">
             <label htmlFor="file-upload" className="relative cursor-pointer flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-gray-300 rounded-lg bg-white hover:bg-gray-50 transition-colors">
@@ -110,14 +131,13 @@ const App: React.FC = () => {
             <div className="flex flex-col sm:flex-row items-center gap-4">
               <button
                 onClick={processScorecard}
-                disabled={isLoading}
+                disabled={isLoading || !!scorecardData}
                 className="w-48 h-12 flex items-center justify-center px-6 py-3 text-white font-semibold bg-green-600 rounded-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-200"
               >
-                {isLoading ? <Spinner className="w-6 h-6" /> : 'Extract JSON'}
+                {isLoading ? <Spinner className="w-6 h-6" /> : 'Extract Data'}
               </button>
               <button
                 onClick={resetState}
-                disabled={isLoading}
                 className="w-48 h-12 px-6 py-3 font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 disabled:opacity-50 transition-all duration-200"
               >
                 Upload New Image
@@ -134,25 +154,24 @@ const App: React.FC = () => {
         )}
         
         {scorecardData && (
-          <div className="mt-8 w-full max-w-3xl">
-            <div className="flex justify-between items-center mb-2">
-                <h2 className="text-xl font-bold text-gray-800">JSON Output</h2>
-                <div className="flex gap-2">
-                    <button onClick={handleCopyJson} className="flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors">
-                        <CopyIcon className="w-5 h-5 mr-2" />
-                        {copySuccess || 'Copy'}
-                    </button>
-                    <button onClick={handleDownloadJson} className="flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                        <DownloadIcon className="w-5 h-5 mr-2" />
-                        Download
-                    </button>
-                </div>
+          <div className="mt-8 w-full">
+            <ScorecardTable data={scorecardData} />
+            <div className="mt-6 flex flex-col items-center gap-4">
+                <button
+                    onClick={handleSaveToSheet}
+                    disabled={!isSignedIn || isSaving || saveSuccess}
+                    className="w-64 h-12 flex items-center justify-center px-6 py-3 text-white font-semibold bg-blue-600 rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-200"
+                >
+                    {isSaving ? <Spinner className="w-6 h-6" /> : (saveSuccess ? <CheckIcon className="w-6 h-6 mr-2" /> : <SheetIcon className="w-6 h-6 mr-2" />)}
+                    {saveSuccess ? 'Saved Successfully!' : 'Save to Google Sheet'}
+                </button>
+                {!isSignedIn && <p className="text-sm text-yellow-700">Please sign in with Google to save the data.</p>}
+                 {saveError && (
+                    <div className="w-full max-w-xl p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg text-center">
+                        <p>{saveError}</p>
+                    </div>
+                )}
             </div>
-            <pre className="bg-gray-800 text-green-300 p-4 rounded-lg overflow-x-auto text-sm shadow-inner">
-                <code>
-                    {JSON.stringify(scorecardData, null, 2)}
-                </code>
-            </pre>
           </div>
         )}
       </main>

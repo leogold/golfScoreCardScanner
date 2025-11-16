@@ -1,5 +1,5 @@
 {
   "name": "Golf Scorecard Scanner",
-  "description": "An application that uses AI to scan a photo of a golf scorecard and extract the scores into a structured digital format.",
+  "description": "An application that uses AI to scan a photo of a golf scorecard, extract the scores, and save them to a Google Sheet.",
   "requestFramePermissions": []
 }
