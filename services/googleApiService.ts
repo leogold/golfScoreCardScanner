@@ -1,9 +1,29 @@
+
 import type { ScorecardData } from '../types';
 
 // FIX: Add declarations for gapi and google to resolve TypeScript errors.
 // These are loaded from external scripts and are available in the global scope at runtime.
 declare const gapi: any;
-declare const google: any;
+// FIX: Replace `declare const google: any;` with a namespace declaration to provide type information for the Google Identity Services client.
+declare namespace google {
+  namespace accounts {
+    namespace oauth2 {
+      interface TokenClient {
+        requestAccessToken: (overrideConfig: { prompt: string }) => void;
+      }
+      interface TokenResponse {
+          access_token: string;
+          error?: any;
+      }
+      function initTokenClient(config: {
+        client_id: string | undefined;
+        scope: string;
+        callback: (tokenResponse: TokenResponse) => void;
+      }): TokenClient;
+      function revoke(accessToken: string, callback: () => void): void;
+    }
+  }
+}
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const API_KEY = process.env.API_KEY;
@@ -14,56 +34,63 @@ const SPREADSHEET_ID = '1sjDla83PB-8fq57Pbk2G2dnRgtcgYa4f8nTsoPoMY5s';
 const RANGE = 'rawData!A1';
 
 let tokenClient: google.accounts.oauth2.TokenClient | null = null;
-let gapiInited = false;
-let gisInited = false;
 
-
-/**
- * Callback after the API client is loaded. Loads the discovery doc to initialize the API.
- */
-async function intializeGapiClient() {
-  await gapi.client.init({
-    apiKey: API_KEY,
-    discoveryDocs: DISCOVERY_DOCS,
+// Create a promise that resolves when GAPI is loaded and initialized.
+// This prevents race conditions where gapi.client is used before it's ready.
+const gapiInitPromise = new Promise<void>((resolve, reject) => {
+  gapi.load('client', async () => {
+    try {
+      await gapi.client.init({
+        apiKey: API_KEY,
+        discoveryDocs: DISCOVERY_DOCS,
+      });
+      resolve();
+    } catch (err) {
+      console.error("Error initializing GAPI client:", err);
+      reject(err);
+    }
   });
-  gapiInited = true;
-}
+});
 
 /**
- *  Initializes the API client library and sets up sign-in state
- *  listeners.
+ *  Initializes the GIS token client. This is called when the GSI script from Google has loaded.
  */
 export function initClient(updateSigninStatus: (isSignedIn: boolean) => void) {
-  gapi.load('client', intializeGapiClient);
+  if (!CLIENT_ID) {
+    console.error("Google Client ID is not configured.");
+    return;
+  }
 
   tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID!,
+    client_id: CLIENT_ID,
     scope: SCOPES,
-    callback: async (resp) => {
-      if (resp.error !== undefined) {
-        throw (resp);
+    callback: async (tokenResponse) => {
+      // This callback is fired after the user signs in.
+      // We must wait for the gapi client to be ready before using it.
+      try {
+        await gapiInitPromise;
+        if (tokenResponse && tokenResponse.access_token) {
+          gapi.client.setToken(tokenResponse);
+          updateSigninStatus(true);
+        } else if (tokenResponse.error) {
+          console.error('GSI Error:', tokenResponse.error);
+          updateSigninStatus(false);
+        }
+      } catch (err) {
+        console.error("Error during GAPI initialization:", err);
+        updateSigninStatus(false);
       }
-      updateSigninStatus(true);
     },
   });
-
-   if (gapi.client.getToken() === null) {
-      // Prompt the user to select a Google Account and ask for consent to share their data
-      // when establishing a new session.
-      tokenClient.requestAccessToken({prompt: 'consent'});
-    } else {
-       updateSigninStatus(true);
-    }
 }
 
 export function handleAuthClick() {
-  if (gapi.client.getToken() === null) {
+  if (tokenClient) {
     // Prompt the user to select a Google Account and ask for consent to share their data
     // when establishing a new session.
-    tokenClient?.requestAccessToken({prompt: ''});
+    tokenClient.requestAccessToken({prompt: ''});
   } else {
-    // User is already signed in.
-    console.log("Already signed in.");
+    console.error("Auth client not initialized.");
   }
 }
 
@@ -77,9 +104,8 @@ export function handleSignoutClick() {
 }
 
 export async function appendToSheet(data: ScorecardData): Promise<any> {
-    if (!gapiInited) {
-        throw new Error("GAPI client not initialized.");
-    }
+    // Wait for the GAPI client to be initialized before making an API call.
+    await gapiInitPromise;
     
     const rowData = [
         new Date().toISOString(),
